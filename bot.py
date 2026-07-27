@@ -13,6 +13,14 @@ from discord import app_commands
 # Zainstaluj ją na serwerze, na którym stoi bot: pip install mcrcon --break-system-packages
 try:
     from mcrcon import MCRcon
+    # mcrcon w konstruktorze/odczycie ustawia timeout przez signal.signal()/signal.alarm(),
+    # a to działa wyłącznie w głównym wątku głównego interpretera. My łączymy się przez
+    # asyncio.to_thread (wątek roboczy), więc wyłączamy te wywołania i pilnujemy timeoutu
+    # samym socketem (patrz rcon_wykonaj -> mcr.socket.settimeout(...)).
+    import mcrcon as _mcrcon_module
+    if hasattr(_mcrcon_module, "signal") and _mcrcon_module.signal is not None:
+        _mcrcon_module.signal.signal = lambda *args, **kwargs: None
+        _mcrcon_module.signal.alarm = lambda *args, **kwargs: None
 except ImportError:
     MCRcon = None
 
@@ -575,6 +583,7 @@ async def rcon_wykonaj(komenda: str) -> tuple[bool, str]:
 
     def _wykonaj():
         with MCRcon(cfg["rcon_host"], cfg["rcon_haslo"], port=cfg["rcon_port"]) as mcr:
+            mcr.socket.settimeout(5)
             return mcr.command(komenda)
 
     try:
