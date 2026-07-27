@@ -100,6 +100,10 @@ DEFAULT_CONFIG = {
         # Pingowanie przy wysyłce zapowiedzi: "brak" / "rola" / "everyone"
         "typ_ping": "brak",
         "rola_ping_id": 0,
+        # Pingowanie przy ogłoszeniu startu lobby: "brak" / "rola" / "everyone"
+        # (domyślnie "everyone", żeby zachować dotychczasowe zachowanie bota)
+        "typ_ping_start": "everyone",
+        "rola_ping_start_id": 0,
     },
     "panel_messages": {
         "ticket": {"channel_id": 0, "message_id": 0},
@@ -279,6 +283,12 @@ if "typ_ping" not in _ig:
     _zmieniono_igrzyska = True
 if "rola_ping_id" not in _ig:
     _ig["rola_ping_id"] = 0
+    _zmieniono_igrzyska = True
+if "typ_ping_start" not in _ig:
+    _ig["typ_ping_start"] = "everyone"
+    _zmieniono_igrzyska = True
+if "rola_ping_start_id" not in _ig:
+    _ig["rola_ping_start_id"] = 0
     _zmieniono_igrzyska = True
 if _zmieniono_igrzyska:
     save_config()
@@ -574,14 +584,28 @@ async def rcon_wykonaj(komenda: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-def zbuduj_ping_zapowiedzi(cfg: dict):
-    """Zwraca (content, allowed_mentions) do wysyłki zapowiedzi, zależnie od trybu pingu w configu."""
-    typ = cfg.get("typ_ping", "brak")
+def zbuduj_ping(cfg: dict, klucz_typu: str, klucz_roli: str):
+    """Zwraca (content, allowed_mentions) do wysyłki wiadomości, zależnie od trybu pingu w configu.
+
+    klucz_typu / klucz_roli - nazwy pól w cfg["igrzyska"], np. "typ_ping"/"rola_ping_id"
+    (zapowiedź) albo "typ_ping_start"/"rola_ping_start_id" (start lobby).
+    """
+    typ = cfg.get(klucz_typu, "brak")
     if typ == "everyone":
         return "@everyone", discord.AllowedMentions(everyone=True, roles=False, users=False)
-    if typ == "rola" and cfg.get("rola_ping_id"):
-        return f"<@&{cfg['rola_ping_id']}>", discord.AllowedMentions(everyone=False, roles=True, users=False)
+    if typ == "rola" and cfg.get(klucz_roli):
+        return f"<@&{cfg[klucz_roli]}>", discord.AllowedMentions(everyone=False, roles=True, users=False)
     return None, discord.AllowedMentions.none()
+
+
+def zbuduj_ping_zapowiedzi(cfg: dict):
+    """Zwraca (content, allowed_mentions) do wysyłki zapowiedzi, zależnie od trybu pingu w configu."""
+    return zbuduj_ping(cfg, "typ_ping", "rola_ping_id")
+
+
+def zbuduj_ping_startu(cfg: dict):
+    """Zwraca (content, allowed_mentions) do wysyłki ogłoszenia startu, zależnie od trybu pingu w configu."""
+    return zbuduj_ping(cfg, "typ_ping_start", "rola_ping_start_id")
 
 
 async def wyslij_zapowiedz_igrzysk(kanal: discord.TextChannel):
@@ -603,15 +627,15 @@ async def wyslij_zapowiedz_igrzysk(kanal: discord.TextChannel):
 
 
 async def rozpocznij_igrzyska(guild: discord.Guild):
-    """Wysyła ogłoszenie @everyone, odpala lobby przez RCON i planuje jego zamknięcie za 10 minut."""
+    """Wysyła ogłoszenie startu (ping wg konfiguracji), odpala lobby przez RCON i planuje jego zamknięcie za 10 minut."""
     cfg = CONFIG["igrzyska"]
     kanal_ogl = guild.get_channel(cfg["kanal_ogloszenia"]) or guild.get_channel(cfg["kanal_zapowiedzi"])
 
     if kanal_ogl:
         embed = discord.Embed(title="🏹 Igrzyska Śmierci - START!", description=cfg["wiadomosc_start_tresc"], color=get_color("akcent"))
         embed.set_footer(text=CONFIG["footer"], icon_url=footer_icon(guild))
-        allowed = discord.AllowedMentions(everyone=True)
-        await kanal_ogl.send(content="@everyone", embed=embed, allowed_mentions=allowed)
+        ping_tresc, ping_allowed = zbuduj_ping_startu(cfg)
+        await kanal_ogl.send(content=ping_tresc, embed=embed, allowed_mentions=ping_allowed)
 
     sukces, wynik = await rcon_wykonaj(cfg["komenda_start"])
     if not sukces and kanal_ogl:
@@ -1660,14 +1684,15 @@ def render_igrzyska_panel():
     embed.add_field(name="⏰ Godziny wysyłki", value=f"{', '.join(cfg['godziny'])}\n*(czas: Europe/Warsaw)*", inline=True)
     embed.add_field(name="🔁 Harmonogram", value=("🟢 Aktywny" if cfg["harmonogram_aktywny"] else "🔴 Wyłączony"), inline=True)
 
-    typ_ping = cfg.get("typ_ping", "brak")
-    if typ_ping == "everyone":
-        ping_txt = "📢 @everyone"
-    elif typ_ping == "rola":
-        ping_txt = f"<@&{cfg['rola_ping_id']}>" if cfg.get("rola_ping_id") else "⚠️ Wybierz rolę poniżej"
-    else:
-        ping_txt = "🔕 Brak pingu"
-    embed.add_field(name="📌 Ping przy zapowiedzi", value=ping_txt, inline=True)
+    def opisz_ping(typ_ping, rola_id):
+        if typ_ping == "everyone":
+            return "📢 @everyone"
+        if typ_ping == "rola":
+            return f"<@&{rola_id}>" if rola_id else "⚠️ Wybierz rolę w ustawieniach pingów"
+        return "🔕 Brak pingu"
+
+    embed.add_field(name="📌 Ping przy zapowiedzi", value=opisz_ping(cfg.get("typ_ping", "brak"), cfg.get("rola_ping_id")), inline=True)
+    embed.add_field(name="📌 Ping przy starcie", value=opisz_ping(cfg.get("typ_ping_start", "everyone"), cfg.get("rola_ping_start_id")), inline=True)
 
     rcon_status = f"🟢 {cfg['rcon_host']}:{cfg['rcon_port']}" if cfg["rcon_host"] and cfg["rcon_haslo"] else "🔴 Brak konfiguracji"
     embed.add_field(name="🔌 RCON", value=rcon_status, inline=True)
@@ -1694,11 +1719,6 @@ class IgrzyskaPanelView(discord.ui.View):
         else:
             self.btn_toggle.label = "▶️ Włącz harmonogram"
             self.btn_toggle.style = discord.ButtonStyle.success
-
-        typ_ping = cfg.get("typ_ping", "brak")
-        etykiety_pingu = {"brak": "🔕 Ping: Brak", "rola": "🔔 Ping: Rola", "everyone": "📢 Ping: @everyone"}
-        self.btn_typ_pingu.label = etykiety_pingu.get(typ_ping, "🔕 Ping: Brak")
-        self.btn_typ_pingu.style = discord.ButtonStyle.secondary if typ_ping == "brak" else discord.ButtonStyle.primary
 
     @discord.ui.select(cls=discord.ui.ChannelSelect, channel_types=[discord.ChannelType.text],
                         placeholder="📢 Kanał zapowiedzi (z reakcją)...", row=0)
@@ -1760,7 +1780,54 @@ class IgrzyskaPanelView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=view)
         await interaction.followup.send(f"Zapowiedź wysłana na {kanal.mention} ✅", ephemeral=True)
 
-    @discord.ui.button(label="🔕 Ping: Brak", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(label="🔔 Ustawienia pingów", style=discord.ButtonStyle.primary, row=3)
+    async def btn_pingi(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed, view = render_igrzyska_ping_panel()
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+def render_igrzyska_ping_panel():
+    """Podpanel ustawień pingów - osobno dla zapowiedzi i osobno dla startu lobby."""
+    cfg = CONFIG["igrzyska"]
+    embed = discord.Embed(title="🔔 Igrzyska Śmierci — ustawienia pingów", color=get_color("akcent"))
+
+    def opisz_ping(typ_ping, rola_id):
+        if typ_ping == "everyone":
+            return "📢 @everyone"
+        if typ_ping == "rola":
+            return f"<@&{rola_id}>" if rola_id else "⚠️ Wybierz rolę z listy poniżej"
+        return "🔕 Brak pingu"
+
+    embed.add_field(
+        name="📢 Ping przy zapowiedzi",
+        value=opisz_ping(cfg.get("typ_ping", "brak"), cfg.get("rola_ping_id")),
+        inline=False,
+    )
+    embed.add_field(
+        name="🎉 Ping przy starcie",
+        value=opisz_ping(cfg.get("typ_ping_start", "everyone"), cfg.get("rola_ping_start_id")),
+        inline=False,
+    )
+    embed.set_footer(text="Przyciski przełączają tryb (Brak → @everyone → Rola). Rolę wybierz z listy poniżej.")
+    return embed, IgrzyskaPingPanelView()
+
+
+class IgrzyskaPingPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        cfg = CONFIG["igrzyska"]
+
+        typ_ping = cfg.get("typ_ping", "brak")
+        etykiety_pingu = {"brak": "🔕 Zapowiedź - Ping: Brak", "rola": "🔔 Zapowiedź - Ping: Rola", "everyone": "📢 Zapowiedź - Ping: @everyone"}
+        self.btn_typ_pingu.label = etykiety_pingu.get(typ_ping, "🔕 Zapowiedź - Ping: Brak")
+        self.btn_typ_pingu.style = discord.ButtonStyle.secondary if typ_ping == "brak" else discord.ButtonStyle.primary
+
+        typ_ping_start = cfg.get("typ_ping_start", "everyone")
+        etykiety_pingu_start = {"brak": "🔕 Start - Ping: Brak", "rola": "🔔 Start - Ping: Rola", "everyone": "📢 Start - Ping: @everyone"}
+        self.btn_typ_pingu_start.label = etykiety_pingu_start.get(typ_ping_start, "📢 Start - Ping: @everyone")
+        self.btn_typ_pingu_start.style = discord.ButtonStyle.secondary if typ_ping_start == "brak" else discord.ButtonStyle.primary
+
+    @discord.ui.button(label="🔕 Zapowiedź - Ping: Brak", style=discord.ButtonStyle.secondary, row=0)
     async def btn_typ_pingu(self, interaction: discord.Interaction, button: discord.ui.Button):
         cfg = CONFIG["igrzyska"]
         kolejnosc = ["brak", "everyone", "rola"]
@@ -1768,21 +1835,52 @@ class IgrzyskaPanelView(discord.ui.View):
         nastepny = kolejnosc[(kolejnosc.index(obecny) + 1) % len(kolejnosc)] if obecny in kolejnosc else "brak"
         cfg["typ_ping"] = nastepny
         save_config()
-        embed, view = render_igrzyska_panel()
+        embed, view = render_igrzyska_ping_panel()
         await interaction.response.edit_message(embed=embed, view=view)
         if nastepny == "rola" and not cfg.get("rola_ping_id"):
             await interaction.followup.send(
-                "Tryb ustawiony na **Rola** - teraz wybierz konkretną rolę z listy w panelu (na dole).",
+                "Tryb zapowiedzi ustawiony na **Rola** - teraz wybierz konkretną rolę z listy niżej.",
                 ephemeral=True,
             )
 
     @discord.ui.select(cls=discord.ui.RoleSelect,
-                        placeholder="🔔 Rola do pingowania przy zapowiedzi...", row=4)
+                        placeholder="🔔 Rola do pingowania przy zapowiedzi...", row=1)
     async def wybierz_role_pingu(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
         cfg = CONFIG["igrzyska"]
         cfg["rola_ping_id"] = select.values[0].id
         cfg["typ_ping"] = "rola"  # wybór roli automatycznie ustawia tryb pingu na "Rola"
         save_config()
+        embed, view = render_igrzyska_ping_panel()
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    @discord.ui.button(label="📢 Start - Ping: @everyone", style=discord.ButtonStyle.primary, row=2)
+    async def btn_typ_pingu_start(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = CONFIG["igrzyska"]
+        kolejnosc = ["brak", "everyone", "rola"]
+        obecny = cfg.get("typ_ping_start", "everyone")
+        nastepny = kolejnosc[(kolejnosc.index(obecny) + 1) % len(kolejnosc)] if obecny in kolejnosc else "brak"
+        cfg["typ_ping_start"] = nastepny
+        save_config()
+        embed, view = render_igrzyska_ping_panel()
+        await interaction.response.edit_message(embed=embed, view=view)
+        if nastepny == "rola" and not cfg.get("rola_ping_start_id"):
+            await interaction.followup.send(
+                "Tryb startu ustawiony na **Rola** - teraz wybierz konkretną rolę z listy niżej.",
+                ephemeral=True,
+            )
+
+    @discord.ui.select(cls=discord.ui.RoleSelect,
+                        placeholder="🎉 Rola do pingowania przy starcie lobby...", row=3)
+    async def wybierz_role_pingu_start(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
+        cfg = CONFIG["igrzyska"]
+        cfg["rola_ping_start_id"] = select.values[0].id
+        cfg["typ_ping_start"] = "rola"  # wybór roli automatycznie ustawia tryb pingu na "Rola"
+        save_config()
+        embed, view = render_igrzyska_ping_panel()
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    @discord.ui.button(label="⬅️ Wróć do panelu głównego", style=discord.ButtonStyle.secondary, row=4)
+    async def btn_wroc(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed, view = render_igrzyska_panel()
         await interaction.response.edit_message(embed=embed, view=view)
 
